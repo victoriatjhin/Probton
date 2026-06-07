@@ -1,17 +1,140 @@
 import numpy as np
 import matplotlib.pyplot as plt
-
-import numpy as np
-import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 
 # ==========================================
 # SYSTEM PARAMETERS & CONFIGURATION
 # ==========================================
-INITIAL_OFFSET_BOUNDS    = (-12.0, 12.0) # Random initialization boundary (µm)
-STEP_1_TO_2_SIZE_BOUNDS  = (3.0, 6.0)    # Blind first mechanical move range (µm)
-STEP_2_TO_2B_SIZE_BOUNDS = (3.0, 6.0)    # Second mechanical move range for area track (µm)
-VIBRATION_SPAN_BOUNDS    = (1.0, 2.0)    # Base MEMS sweep window size (µm)
-MAX_ASYMMETRIC_SKEW      = 0.25          # Max percentage imbalance allowed between wings
+INITIAL_OFFSET_BOUNDS    = (-12.0, 12.0)
+STEP_1_TO_2_SIZE_BOUNDS  = (3.0, 6.0)
+STEP_2_TO_2B_SIZE_BOUNDS = (3.0, 6.0)
+VIBRATION_SPAN_BOUNDS    = (1.0, 2.0)
+MAX_ASYMMETRIC_SKEW      = 0.25
+
+# ==========================================
+# REALISTIC MOTOR IMPERFECTIONS (CAN BE DISABLED)
+# ==========================================
+ENABLE_MOTOR_ERRORS = True
+BACKLASH_UM = 0.5
+MIN_MOVE_UM = 0.3
+STEP_ERROR_PERCENT = 0.05
+
+# ==========================================
+# SIGNAL ERROR INJECTION CONFIGURATION
+# ==========================================
+ENABLE_SIGNAL_ERRORS = True
+ERROR_LEVEL = 0.03
+
+ENABLE_WHITE_NOISE = True
+WHITE_NOISE_LEVEL = 0.2
+
+ENABLE_SHOT_NOISE = True
+SHOT_NOISE_LEVEL = 0.15
+
+ENABLE_QUANTIZATION = True
+QUANTIZATION_BITS = 10
+
+ENABLE_SINE_RIPPLE = True
+SINE_RIPPLE_AMPLITUDE = 0.1
+SINE_RIPPLE_FREQ = 5
+
+ENABLE_OFFSET_DRIFT = True
+OFFSET_DRIFT = 0.05
+
+ENABLE_SPIKE_NOISE = True
+SPIKE_RATE = 0.1
+SPIKE_AMPLITUDE = 0.5
+
+# ==========================================
+# AREA CALCULATION (Compatible with all numpy versions)
+# ==========================================
+def calculate_area(x, y):
+    try:
+        return np.trapezoid(y, x)
+    except AttributeError:
+        return np.trapz(y, x)
+
+# ==========================================
+# ERROR INJECTION FUNCTION
+# ==========================================
+def inject_errors(y_clean):
+    if not ENABLE_SIGNAL_ERRORS:
+        return y_clean
+    
+    y_noisy = y_clean.copy()
+    
+    if ENABLE_WHITE_NOISE and WHITE_NOISE_LEVEL > 0:
+        white_noise = np.random.normal(0, WHITE_NOISE_LEVEL * ERROR_LEVEL, len(y_noisy))
+        y_noisy += white_noise
+    
+    if ENABLE_SHOT_NOISE and SHOT_NOISE_LEVEL > 0:
+        shot_noise = np.random.poisson(y_noisy * 1000) / 1000 - y_noisy
+        y_noisy += shot_noise * SHOT_NOISE_LEVEL * ERROR_LEVEL
+    
+    if ENABLE_QUANTIZATION and QUANTIZATION_BITS > 0:
+        levels = 2 ** QUANTIZATION_BITS
+        y_noisy = np.round(y_noisy * levels) / levels
+    
+    if ENABLE_SINE_RIPPLE and SINE_RIPPLE_AMPLITUDE > 0:
+        x_pos = np.linspace(0, 2*np.pi, len(y_noisy))
+        ripple = SINE_RIPPLE_AMPLITUDE * ERROR_LEVEL * np.sin(SINE_RIPPLE_FREQ * x_pos)
+        y_noisy += ripple
+    
+    if ENABLE_OFFSET_DRIFT and OFFSET_DRIFT > 0:
+        drift = np.linspace(0, OFFSET_DRIFT * ERROR_LEVEL, len(y_noisy))
+        y_noisy += drift
+    
+    if ENABLE_SPIKE_NOISE and SPIKE_RATE > 0 and SPIKE_AMPLITUDE > 0:
+        num_spikes = int(len(y_noisy) * SPIKE_RATE)
+        spike_indices = np.random.choice(len(y_noisy), min(num_spikes, len(y_noisy)), replace=False)
+        y_noisy[spike_indices] += np.random.uniform(-SPIKE_AMPLITUDE * ERROR_LEVEL, 
+                                                     SPIKE_AMPLITUDE * ERROR_LEVEL, 
+                                                     len(spike_indices))
+    
+    return np.clip(y_noisy, 0, 1)
+
+# ==========================================
+# HARDWARE EXECUTION WITH REALISTIC MOTOR ERRORS
+# ==========================================
+def execute_motor_step(command_um, current_position):
+    if not ENABLE_MOTOR_ERRORS:
+        return current_position + command_um, command_um
+    
+    if abs(command_um) < BACKLASH_UM:
+        return current_position, 0
+    
+    actual_move = command_um * (1 + np.random.uniform(-STEP_ERROR_PERCENT, STEP_ERROR_PERCENT))
+    
+    if abs(actual_move) < MIN_MOVE_UM:
+        actual_move = 0
+    
+    actual_move += np.random.normal(0, 0.05)
+    
+    return current_position + actual_move, actual_move
+
+# ==========================================
+# PRINT ERROR CONFIGURATION
+# ==========================================
+print("\n" + "="*80)
+print("SIMULATION CONFIGURATION")
+print("="*80)
+
+print("\nMOTOR ERRORS:")
+if ENABLE_MOTOR_ERRORS:
+    print(f"   ✓ ENABLED - Backlash: {BACKLASH_UM}µm, Min Move: {MIN_MOVE_UM}µm, Step Error: ±{STEP_ERROR_PERCENT*100:.0f}%")
+else:
+    print(f"   ✗ DISABLED - Ideal motor")
+
+print("\nSIGNAL ERRORS:")
+if not ENABLE_SIGNAL_ERRORS:
+    print("   ✗ DISABLED - Clean signal")
+else:
+    print(f"   ✓ ENABLED - Error Level: {ERROR_LEVEL:.1%}")
+    print(f"   • White Noise: {WHITE_NOISE_LEVEL * ERROR_LEVEL:.4f}")
+    print(f"   • Shot Noise: {SHOT_NOISE_LEVEL * ERROR_LEVEL:.4f}")
+    print(f"   • Quantization: {QUANTIZATION_BITS}-bit")
+    print(f"   • Sine Ripple: {SINE_RIPPLE_AMPLITUDE * ERROR_LEVEL:.4f}")
+    print(f"   • Offset Drift: {OFFSET_DRIFT * ERROR_LEVEL:.4f}")
 
 # ==========================================
 # RANDOMIZED HARDWARE COMPONENT SELECTION
@@ -20,112 +143,100 @@ step_dist_1_to_2  = np.random.uniform(*STEP_1_TO_2_SIZE_BOUNDS)
 step_dist_2_to_2b = np.random.uniform(*STEP_2_TO_2B_SIZE_BOUNDS)
 vibration_span    = np.random.uniform(*VIBRATION_SPAN_BOUNDS)
 
-# Generate MEMS physical sweep asymmetry parameters
 skew_factor = np.random.uniform(-MAX_ASYMMETRIC_SKEW, MAX_ASYMMETRIC_SKEW)
 left_wing   = (vibration_span / 2) * (1.0 + skew_factor)
 right_wing  = (vibration_span / 2) * (1.0 - skew_factor)
 
-# Convert asymmetry metrics to percentages for layout presentation
 total_mems_span = left_wing + right_wing
 left_pct        = (left_wing / total_mems_span) * 100
 right_pct       = (right_wing / total_mems_span) * 100
 
 # ==========================================
-# PHYSICAL CONSTANTS (GAUSSIAN FIELD)
+# PHYSICAL CONSTANTS
 # ==========================================
 dx_sensitivity      = 1.25  
 db_drop             = 0.1          
 linear_transmission = 10**(-db_drop / 10) 
-sigma               = np.sqrt(-(dx_sensitivity**2) / (2 * np.log(linear_transmission)))  # σ ≈ 5.82 µm
+sigma               = np.sqrt(-(dx_sensitivity**2) / (2 * np.log(linear_transmission)))
 
-# Helper utility to collect sensor profile traces across an asymmetric window
-def sweep_sensor(center_position):
+def sweep_sensor(center_position, return_clean=False):
     lower_bound = center_position - left_wing
     upper_bound = center_position + right_wing
     x_trace = np.linspace(lower_bound, upper_bound, 300)
-    y_trace = np.exp(-(x_trace**2) / (2 * sigma**2)) # Fixed physical core lands exactly at 0.000
-    return x_trace, y_trace
+    y_trace_clean = np.exp(-(x_trace**2) / (2 * sigma**2))
+    y_trace_noisy = inject_errors(y_trace_clean)
+    
+    if return_clean:
+        return x_trace, y_trace_clean, y_trace_noisy
+    return x_trace, y_trace_noisy
 
 # ==========================================
-# PHYSICAL STEP 1: INITIAL POSITION CAPTURE
+# PHYSICAL STEP 1
 # ==========================================
 X1 = np.random.uniform(*INITIAL_OFFSET_BOUNDS)
-X1_trace, Y1_trace = sweep_sensor(X1)
+X1_trace, Y1_clean, Y1_noisy = sweep_sensor(X1, return_clean=True)
+Y1_trace = Y1_noisy
 
-# Extract Step 1 Hardware Feedback Data
 max_Y1 = np.max(Y1_trace)
 min_Y1 = np.min(Y1_trace)
 delta_Y1 = max_Y1 - min_Y1
-try:
-    area_A1 = np.trapezoid(Y1_trace, X1_trace)
-except AttributeError:
-    area_A1 = np.trapz(Y1_trace, X1_trace)
+area_A1 = calculate_area(X1_trace, Y1_trace)
 
 # ==========================================
-# PHYSICAL STEP 2: FIRST MOTION TOWARD CENTER
+# PHYSICAL STEP 2
 # ==========================================
 initial_direction = 1.0 if X1 < 0 else -1.0
-X2 = X1 + (initial_direction * step_dist_1_to_2)
-X2_trace, Y2_trace = sweep_sensor(X2)
+command_step1 = initial_direction * step_dist_1_to_2
+X2, actual_move1 = execute_motor_step(command_step1, X1)
+X2_trace, Y2_clean, Y2_noisy = sweep_sensor(X2, return_clean=True)
+Y2_trace = Y2_noisy
 
-# Extract Step 2 Hardware Feedback Data
 max_Y2 = np.max(Y2_trace)
 min_Y2 = np.min(Y2_trace)
 delta_Y2 = max_Y2 - min_Y2
-try:
-    area_A2 = np.trapezoid(Y2_trace, X2_trace)
-except AttributeError:
-    area_A2 = np.trapz(Y2_trace, X2_trace)
+area_A2 = calculate_area(X2_trace, Y2_trace)
 
 # ==========================================
-# ALGORITHM TRACK 1: 2-STEP LOG-DELTA FINAL PREDICTOR (PARAMETER-FREE & CROSSOVER-SAFE)
+# ALGORITHM TRACK 1: LOG-DELTA
 # ==========================================
-# Extract directional slope signs directly from the physical sweep array boundaries
 slope_sign_step1 = 1.0 if Y1_trace[-1] >= Y1_trace[0] else -1.0
 slope_sign_step2 = 1.0 if Y2_trace[-1] >= Y2_trace[0] else -1.0
 
-# Compute signed log-space gradients (natively registers peak crossover boundaries)
 G1 = (np.log(max_Y1) - np.log(min_Y1)) * slope_sign_step1
 G2 = (np.log(max_Y2) - np.log(min_Y2)) * slope_sign_step2
 
 denominator_delta = G2 - G1
 
 if abs(denominator_delta) > 1e-9:
-    # Exact linear intercept solver. Sign-flips are naturally resolved, and sigma cancels out perfectly.
     final_target_delta = X2 - (G2 * (X2 - X1)) / denominator_delta
 else:
     final_target_delta = X2
 
-final_delta_x_trace, final_delta_y_trace = sweep_sensor(final_target_delta)
+final_delta_x_trace, final_delta_clean, final_delta_noisy = sweep_sensor(final_target_delta, return_clean=True)
+final_delta_y_trace = final_delta_noisy
 final_delta_max = np.max(final_delta_y_trace)
 final_delta_min = np.min(final_delta_y_trace)
 final_delta_val = final_delta_max - final_delta_min
-try:
-    final_delta_area = np.trapezoid(final_delta_y_trace, final_delta_x_trace)
-except AttributeError:
-    final_delta_area = np.trapz(final_delta_y_trace, final_delta_x_trace)
+final_delta_area = calculate_area(final_delta_x_trace, final_delta_y_trace)
 
 # ==========================================
-# ALGORITHM TRACK 2: 3-POINT LOG-AREA SWEEP STEP
+# ALGORITHM TRACK 2: LOG-AREA
 # ==========================================
 area_heading = initial_direction if (area_A2 >= area_A1) else -initial_direction
-X2b = X2 + (area_heading * step_dist_2_to_2b)  # Cleaned name target variable
-X2b_trace, Y2b_trace = sweep_sensor(X2b)
+command_step2 = area_heading * step_dist_2_to_2b
+X2b, actual_move2 = execute_motor_step(command_step2, X2)
+X2b_trace, Y2b_clean, Y2b_noisy = sweep_sensor(X2b, return_clean=True)
+Y2b_trace = Y2b_noisy
 
 max_Y2b = np.max(Y2b_trace)
 min_Y2b = np.min(Y2b_trace)
 delta_Y2b = max_Y2b - min_Y2b
-try:
-    area_A2b = np.trapezoid(Y2b_trace, X2b_trace)
-except AttributeError:
-    area_A2b = np.trapz(Y2b_trace, X2b_trace)
+area_A2b = calculate_area(X2b_trace, Y2b_trace)
 
-# Process natural log metrics across the 3-point alignment curve to resolve final destination
 ln_A1  = np.log(area_A1)
 ln_A2  = np.log(area_A2)
 ln_A2b = np.log(area_A2b)
 
-# Exact second-order curvature denominator for non-equidistant grids
 h1 = X2 - X1
 h2 = X2b - X2
 denominator_area = (ln_A2b - ln_A2) / h2 - (ln_A2 - ln_A1) / h1
@@ -135,17 +246,16 @@ if abs(denominator_area) > 1e-9:
 else:
     final_target_area = X2
 
-# Evaluate final target profile convergence accuracy from the target positioning
-final_area_x_trace, final_area_y_trace = sweep_sensor(final_target_area)
+final_area_x_trace, final_area_clean, final_area_noisy = sweep_sensor(final_target_area, return_clean=True)
+final_area_y_trace = final_area_noisy
 final_area_max = np.max(final_area_y_trace)
 final_area_min = np.min(final_area_y_trace)
 final_area_delta = final_area_max - final_area_min
-try:
-    final_area_val = np.trapezoid(final_area_y_trace, final_area_x_trace)
-except AttributeError:
-    final_area_val = np.trapz(final_area_y_trace, final_area_x_trace)
+final_area_val = calculate_area(final_area_x_trace, final_area_y_trace)
 
-# Calculated system performance updates
+# ==========================================
+# CALCULATE DELTAS
+# ==========================================
 delta12_max   = max_Y2 - max_Y1
 delta12_min   = min_Y2 - min_Y1
 delta12_delta = delta_Y2 - delta_Y1
@@ -157,64 +267,32 @@ delta2b2_delta = delta_Y2b - delta_Y2
 delta2b2_area  = area_A2b - area_A2
 
 # ==========================================
-# PLOTTING UNIFIED ALIGNMENT TELEMETRY
+# CALCULATE RMSE AND SNR
 # ==========================================
-fig, ax = plt.subplots(figsize=(12, 8))
+rmse_step1 = np.sqrt(np.mean((Y1_clean - Y1_noisy)**2))
+rmse_step2 = np.sqrt(np.mean((Y2_clean - Y2_noisy)**2))
+rmse_step2b = np.sqrt(np.mean((Y2b_clean - Y2b_noisy)**2))
 
-# Continuous Hidden Reference Profile
-x_profile = np.linspace(-25, 25, 1000)
-y_profile = np.exp(-(x_profile**2) / (2 * sigma**2))
-ax.plot(x_profile, y_profile, color='#d3d3d3', linestyle=':', label='Continuous Gaussian Beam Profile')
-
-# Plot Step 1 (Red) and Step 2 (Blue)
-ax.plot(X1_trace, Y1_trace, color='#e60000', linewidth=2, label='Initial Step 1 Profile')
-ax.fill_between(X1_trace, Y1_trace, color='#e60000', alpha=0.08)
-ax.plot(X2_trace, Y2_trace, color='#0066cc', linewidth=2, label='Next Step 2 Profile')
-ax.fill_between(X2_trace, Y2_trace, color='#0066cc', alpha=0.08)
-
-# Plot Final Calculated Dest Profile Outputs
-ax.plot(final_delta_x_trace, final_delta_y_trace, color='#2eb82e', linewidth=2.5, label='Log-Delta Calculated Final Target')
-ax.fill_between(final_delta_x_trace, final_delta_y_trace, color='#2eb82e', alpha=0.08)
-
-# Plot Intermediate Physical Area Sweep Profile (Orange Dash)
-ax.plot(X2b_trace, Y2b_trace, color='#ff9900', linewidth=2, linestyle='--', label='Step 2b Log-Area Sweep Profile')
-ax.fill_between(X2b_trace, Y2b_trace, color='#ff9900', alpha=0.08)
-
-ax.plot(final_area_x_trace, final_area_y_trace, color='#8a2be2', linewidth=2.5, linestyle='-.', label='Log-Area Calculated Final Target')
-ax.fill_between(final_area_x_trace, final_area_y_trace, color='#8a2be2', alpha=0.08)
-
-# Hardware mechanical tracking pins on floor
-ax.errorbar(X1, -0.08, xerr=[[left_wing], [right_wing]], fmt='ro', capsize=4, linewidth=1.5)
-ax.errorbar(X2, -0.14, xerr=[[left_wing], [right_wing]], fmt='bo', capsize=4, linewidth=1.5)
-ax.errorbar(final_target_delta, -0.20, xerr=[[left_wing], [right_wing]], fmt='go', capsize=4, linewidth=2)
-ax.errorbar(X2b, -0.26, xerr=[[left_wing], [right_wing]], fmt='yo', color='#ff9900', capsize=4, linewidth=1.5)
-ax.errorbar(final_target_area, -0.32, xerr=[[left_wing], [right_wing]], fmt='mo', capsize=4, linewidth=2)
-
-# Footprint text timeline anchors on the layout floor
-ax.text(X1, -0.06, f"{left_pct:.1f}% L ◄► {right_pct:.1f}% R", color='#e60000', fontsize=8, ha='center')
-ax.text(X2, -0.12, f"{left_pct:.1f}% L ◄► {right_pct:.1f}% R", color='#0066cc', fontsize=8, ha='center')
-ax.text(final_target_delta, -0.18, f"{left_pct:.1f}% L ◄► {right_pct:.1f}% R", color='#2eb82e', fontsize=8, ha='center')
-ax.text(X2b, -0.24, f"{left_pct:.1f}% L ◄► {right_pct:.1f}% R", color='#ff9900', fontsize=8, ha='center')
-ax.text(final_target_area, -0.30, f"{left_pct:.1f}% L ◄► {right_pct:.1f}% R", color='#8a2be2', fontsize=8, ha='center')
-
-ax.axvline(0.0, color='#404040', linestyle='--', alpha=0.6, label='Target Center (0µm)')
-
-# --- FLOATING CALLOUT LABELS POSITIONED CLEANLY UNDERNEATH THE GAUSSIAN CURVE SLOPES ---
-text_stage1      = f"Initial Step 1:\n• Max: {max_Y1:.4f}\n• Min: {min_Y1:.4f}\n• Delta: {delta_Y1:.4f}\n• Area: {area_A1:.4f}"
-text_stage2      = f"Next Step 2:\n• Max: {max_Y2:.4f}\n• Min: {min_Y2:.4f}\n• Delta: {delta_Y2:.4f}\n• Area: {area_A2:.4f}"
-text_delta_tar   = f"Log-Delta Final:\n• Max: {final_delta_max:.4f}\n• Min: {final_delta_min:.4f}\n• Delta: {final_delta_val:.4f}\n• Area: {final_delta_area:.4f}"
-text_area3_meas  = f"Log-Area Step 2b:\n• Max: {max_Y2b:.4f}\n• Min: {min_Y2b:.4f}\n• Delta: {delta_Y2b:.4f}\n• Area: {area_A2b:.4f}"
-text_area_tar    = f"Log-Area Final:\n• Max: {final_area_max:.4f}\n• Min: {final_area_min:.4f}\n• Delta: {final_area_delta:.4f}\n• Area: {final_area_val:.4f}"
-
-# Historical baseline position readouts nested low on outer wings
-ax.text(X1 - 4.5, 0.15, text_stage1, color='#b30000', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fff7f7', edgecolor='#e60000', alpha=0.9))
-ax.text(X2 + 4.5, 0.15, text_stage2, color='#004499', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#f7faff', edgecolor='#0066cc', alpha=0.9))
-
-# Active processing profiles positioned cleanly below the steep mid-slopes
-ax.text(final_target_delta - 5.0, 0.35, text_delta_tar, color='#1f7a1f', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#f2fff2', edgecolor='#2eb82e', alpha=0.9))
+snr_step1 = 10 * np.log10(np.mean(Y1_clean**2) / rmse_step1**2) if rmse_step1 > 0 else np.inf
+snr_step2 = 10 * np.log10(np.mean(Y2_clean**2) / rmse_step2**2) if rmse_step2 > 0 else np.inf
+snr_step2b = 10 * np.log10(np.mean(Y2b_clean**2) / rmse_step2b**2) if rmse_step2b > 0 else np.inf
 
 # ==========================================
-# PLOTTING UNIFIED ALIGNMENT TELEMETRY
+# CALCULATE FINAL ERRORS
+# ==========================================
+pos_error_delta = abs(final_target_delta)
+pos_error_area = abs(final_target_area)
+
+# ==========================================
+# PRINT RESULTS
+# ==========================================
+print(f"\nRESULTS:")
+print(f"   Amplitude Error: {pos_error_delta:.4f} µm")
+print(f"   Area Error:  {pos_error_area:.4f} µm")
+print(f"   Better: {'Amplitude' if pos_error_delta < pos_error_area else 'Area'}")
+
+# ==========================================
+# PLOTTING
 # ==========================================
 plt.close('all')
 
@@ -239,31 +317,198 @@ ax.plot(X2b_trace, Y2b_trace, color='#ff9900', linewidth=2, label='Step 2b Profi
 ax.fill_between(X2b_trace, Y2b_trace, color='#ff9900', alpha=0.08)
 
 # --- VISUAL OVERLAP REMEDY: SEPARATE HATCH PATTERNS ---
-# Log-Delta uses forward hatches (/) and Log-Area uses backward hatches (\)
-# Where they merge over the peak, it naturally forms a clean cross-hatched grid (X)
-ax.plot(final_delta_x_trace, final_delta_y_trace, color='#2eb82e', linewidth=3.0, label='Log-Delta Calculated Final Target')
+ax.plot(final_delta_x_trace, final_delta_y_trace, color='#2eb82e', linewidth=3.0, label='Amplitude Calculated Final Target')
 ax.fill_between(final_delta_x_trace, final_delta_y_trace, facecolor='none', edgecolor='#2eb82e', hatch='//', alpha=0.25)
 
-ax.plot(final_area_x_trace, final_area_y_trace, color='#8a2be2', linewidth=2.0, linestyle='-.', label='Log-Area Calculated Final Target')
+ax.plot(final_area_x_trace, final_area_y_trace, color='#8a2be2', linewidth=2.0, linestyle='-.', label='Area Calculated Final Target')
 ax.fill_between(final_area_x_trace, final_area_y_trace, facecolor='none', edgecolor='#8a2be2', hatch='\\\\', alpha=0.25)
 
 # Target Core Centroid Indicator Axis (0 µm)
 ax.axvline(0, color='#404040', linestyle='--', alpha=0.6)
 
+# ==========================================
+# ADD CONFIDENCE INDICATOR
+# ==========================================
+avg_snr = (snr_step1 + snr_step2 + snr_step2b) / 3
+if avg_snr > 40:
+    confidence_color = '#4caf50'  # Green - High confidence
+    confidence_text = "HIGH CONFIDENCE"
+elif avg_snr > 30:
+    confidence_color = '#ff9800'  # Orange - Medium confidence
+    confidence_text = "MEDIUM CONFIDENCE"
+else:
+    confidence_color = '#f44336'  # Red - Low confidence
+    confidence_text = "LOW CONFIDENCE"
+
+ax.text(0.02, 0.02, f"{confidence_text}\n(SNR: {avg_snr:.1f}dB)", 
+        transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
+        bbox=dict(boxstyle='round,pad=0.3', facecolor=confidence_color, alpha=0.8, color='white'),
+        color='white', fontweight='bold')
+
+# ==========================================
+# ADD ZOOM INSET FOR PEAK REGION
+# ==========================================
+axins = inset_axes(ax, width="35%", height="35%",
+                   bbox_to_anchor=(0.6, -0.15, 0.4, 0.4), bbox_transform=ax.transAxes)
+
+# Plot zoomed region
+zoom_xmin, zoom_xmax = -2, 2
+zoom_mask_delta = (final_delta_x_trace >= zoom_xmin) & (final_delta_x_trace <= zoom_xmax)
+zoom_mask_area = (final_area_x_trace >= zoom_xmin) & (final_area_x_trace <= zoom_xmax)
+axins.plot(final_delta_x_trace[zoom_mask_delta], final_delta_y_trace[zoom_mask_delta], 
+           color='#2eb82e', linewidth=2.5, label='Amplitude')
+axins.plot(final_area_x_trace[zoom_mask_area], final_area_y_trace[zoom_mask_area], 
+           color='#8a2be2', linewidth=2, linestyle='-.', label='Area')
+axins.axvline(0, color='#404040', linestyle='--', alpha=0.6, linewidth=1)
+axins.axhline(1.0, color='gray', linestyle=':', alpha=0.5)
+axins.set_xlim(zoom_xmin, zoom_xmax)
+axins.set_ylim(0.95, 1.02)
+axins.grid(True, alpha=0.3, linestyle=':')
+axins.set_title('Zoom at Peak', fontsize=7)
+axins.tick_params(labelsize=6)
+axins.legend(fontsize=6)
+
+# Mark the zoom area on main plot
+mark_inset(ax, axins, loc1=1, loc2=3, fc="none", ec="gray", linewidth=1, linestyle='--')
+
+# ==========================================
+# ZOOM INSET 1 - Step 1 Region (Top Right)
+# ==========================================
+axins_step1 = inset_axes(ax, width="32%", height="32%",
+                        bbox_to_anchor=(0.55, 0.4, 0.30, 0.32),
+                        bbox_transform=ax.transAxes, borderpad=0.5)
+
+# Plot zoomed region around Step 1 with wider range
+zoom1_xmin, zoom1_xmax = X1 - 4, X1 + 4
+zoom1_mask = (X1_trace >= zoom1_xmin) & (X1_trace <= zoom1_xmax)
+axins_step1.plot(X1_trace[zoom1_mask], Y1_trace[zoom1_mask], 
+                color='#e60000', linewidth=3, label='_nolegend_')
+axins_step1.plot(X1_trace[zoom1_mask], Y1_clean[zoom1_mask], 
+                color='#cc0000', linewidth=2, linestyle=':', label='_nolegend_')
+axins_step1.axvline(X1, color='#e60000', linestyle='--', alpha=0.6, linewidth=1.5)
+axins_step1.axvline(0, color='#404040', linestyle='--', alpha=0.3, linewidth=1)
+axins_step1.set_xlim(zoom1_xmin, zoom1_xmax)
+axins_step1.set_ylim(min_Y1 * 0.99, max_Y1 * 1.01)
+axins_step1.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+axins_step1.set_title(f'Step 1 Zoom', fontsize=10, fontweight='bold')
+axins_step1.tick_params(labelsize=8)
+axins_step1.set_xlabel('Position (µm)', fontsize=8)
+axins_step1.set_ylabel('Intensity', fontsize=8)
+
+# ==========================================
+# ZOOM INSET 2 - Step 2 Region (Middle Right)
+# ==========================================
+axins_step2 = inset_axes(ax, width="32%", height="32%",
+                        bbox_to_anchor=(0.7, 0.4, 0.30, 0.32),
+                        bbox_transform=ax.transAxes, borderpad=0.5)
+
+# Plot zoomed region around Step 2
+zoom2_xmin, zoom2_xmax = X2 - 4, X2 + 4
+zoom2_mask = (X2_trace >= zoom2_xmin) & (X2_trace <= zoom2_xmax)
+axins_step2.plot(X2_trace[zoom2_mask], Y2_trace[zoom2_mask], 
+                color='#0066cc', linewidth=3, label='_nolegend_')
+axins_step2.plot(X2_trace[zoom2_mask], Y2_clean[zoom2_mask], 
+                color='#004499', linewidth=2, linestyle=':', label='_nolegend_')
+axins_step2.axvline(X2, color='#0066cc', linestyle='--', alpha=0.6, linewidth=1.5)
+axins_step2.axvline(0, color='#404040', linestyle='--', alpha=0.3, linewidth=1)
+axins_step2.set_xlim(zoom2_xmin, zoom2_xmax)
+axins_step2.set_ylim(min_Y2 * 0.99, max_Y2 * 1.01)
+axins_step2.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+axins_step2.set_title(f'Step 2 Zoom', fontsize=10, fontweight='bold')
+axins_step2.tick_params(labelsize=8)
+axins_step2.set_xlabel('Position (µm)', fontsize=8)
+axins_step2.set_ylabel('Intensity', fontsize=8)
+
+# ==========================================
+# ZOOM INSET 3 - Step 2b Region (Bottom Right)
+# ==========================================
+axins_step2b = inset_axes(ax, width="32%", height="32%",
+                         bbox_to_anchor=(0.55, 0.15, 0.30, 0.32),
+                         bbox_transform=ax.transAxes, borderpad=0.5)
+
+# Plot zoomed region around Step 2b
+zoom3_xmin, zoom3_xmax = X2b - 4, X2b + 4
+zoom3_mask = (X2b_trace >= zoom3_xmin) & (X2b_trace <= zoom3_xmax)
+axins_step2b.plot(X2b_trace[zoom3_mask], Y2b_trace[zoom3_mask], 
+                 color='#ff9900', linewidth=3, label='_nolegend_')
+axins_step2b.plot(X2b_trace[zoom3_mask], Y2b_clean[zoom3_mask], 
+                 color='#cc7a00', linewidth=2, linestyle=':', label='_nolegend_')
+axins_step2b.axvline(X2b, color='#ff9900', linestyle='--', alpha=0.6, linewidth=1.5)
+axins_step2b.axvline(0, color='#404040', linestyle='--', alpha=0.3, linewidth=1)
+axins_step2b.set_xlim(zoom3_xmin, zoom3_xmax)
+axins_step2b.set_ylim(min_Y2b * 0.99, max_Y2b * 1.01)
+axins_step2b.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
+axins_step2b.set_title(f'Step 2b Zoom', fontsize=10, fontweight='bold')
+axins_step2b.tick_params(labelsize=8)
+axins_step2b.set_xlabel('Position (µm)', fontsize=8)
+axins_step2b.set_ylabel('Intensity', fontsize=8)
+
+# Add subtle borders
+for inset in [axins_step1, axins_step2, axins_step2b]:
+    inset.set_facecolor('white')
+    inset.set_alpha(0.95)
+    for spine in inset.spines.values():
+        spine.set_edgecolor('#999999')
+        spine.set_linewidth(1)
+
+# ==========================================
+# ADD ERROR METER BAR CHART
+# ==========================================
+ax_error_meter = inset_axes(ax, width="32%", height="32%",
+                            bbox_to_anchor=(0.7, 0.15, 0.30, 0.32), bbox_transform=ax.transAxes)
+
+algorithms = ['Amplitude', 'Area']
+errors = [pos_error_delta, pos_error_area]
+colors = ['#ff6b6b' if e > 0.3 else '#4ecdc4' for e in errors]
+
+# 1. Plot horizontally (barh) to match standard text layout flow
+bars = ax_error_meter.barh(algorithms, errors, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
+
+ax_error_meter.set_xlabel('Error (µm)', fontsize=7)
+ax_error_meter.set_title('Algorithm Error', fontsize=8, fontweight='bold')
+ax_error_meter.tick_params(labelsize=7)
+ax_error_meter.grid(True, alpha=0.3, axis='x', linestyle=':')
+
+# 2. Add an explicit padding buffer to the right axis so values never clip
+max_err = max(errors) if max(errors) > 0 else 0.1
+ax_error_meter.set_xlim(0, max_err * 1.4)
+
+# 3. Universal text loop without if/else logic statements
+for bar, err in zip(bars, errors):
+    ax_error_meter.text(
+        bar.get_width() + (max_err * 0.05),  # Positioned at a uniform distance to the right of each bar end
+        bar.get_y() + bar.get_height()/2.0,  # Exactly centered vertically on the bar line face
+        f'{err:.3f} µm', 
+        ha='left', va='center', 
+        fontsize=7, fontweight='bold', color='#333333'
+    )
+
+# ==========================================
+# ADD PERFORMANCE SUMMARY BOX
+# ==========================================
+performance_text = f"PERFORMANCE SUMMARY:\n"
+performance_text += f"Better Algorithm: {'Area' if pos_error_area < pos_error_delta else 'Amplitude'}\n"
+performance_text += f"Positioning Error: {min(pos_error_delta, pos_error_area):.3f}µm\n"
+performance_text += f"SNR Avg: {avg_snr:.1f}dB"
+
+props_perf = dict(boxstyle='round,pad=0.5', facecolor='#e8f5e9', edgecolor='#2e7d32', alpha=0.95)
+ax.text(0.98, 0.95, performance_text, transform=ax.transAxes, fontsize=9, 
+        verticalalignment='top', horizontalalignment='right', bbox=props_perf, fontfamily='monospace')
+
 # --- SEQUENTIAL LEFT-TO-RIGHT METRIC PANEL PLACEMENT ---
 text_step1_label = f"Step 1 Metrics:\n• Max: {max_Y1:.4f}\n• Min: {min_Y1:.4f}\n• Delta: {delta_Y1:.4f}\n• Area: {area_A1:.4f}"
 text_step2_label = f"Step 2 Metrics:\n• Max: {max_Y2:.4f}\n• Min: {min_Y2:.4f}\n• Delta: {delta_Y2:.4f}\n• Area: {area_A2:.4f}"
 text_step2b_meas = f"Step 2b Metrics:\n• Max: {max_Y2b:.4f}\n• Min: {min_Y2b:.4f}\n• Delta: {delta_Y2b:.4f}\n• Area: {area_A2b:.4f}"
-text_delta_final = f"Log-Delta Final:\n• Max: {final_delta_max:.4f}\n• Min: {final_delta_min:.4f}\n• Delta: {final_delta_val:.4f}\n• Area: {final_delta_area:.4f}"
-text_area_final  = f"Log-Area Final:\n• Max: {final_area_max:.4f}\n• Min: {final_area_min:.4f}\n• Delta: {final_area_delta:.4f}\n• Area: {final_area_val:.4f}"
+text_delta_final = f"Amplitude Final:\n• Max: {final_delta_max:.4f}\n• Min: {final_delta_min:.4f}\n• Delta: {final_delta_val:.4f}\n• Area: {final_delta_area:.4f}"
+text_area_final  = f"Area Final:\n• Max: {final_area_max:.4f}\n• Min: {final_area_min:.4f}\n• Delta: {final_area_delta:.4f}\n• Area: {final_area_val:.4f}"
 
 # Step performance
-ax.text(-35.0, 0.40, text_step1_label, color='#b30000', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fff7f7', edgecolor='#e60000', alpha=0.9))
-ax.text(-25.0, 0.40, text_step2_label, color='#004499', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#f7faff', edgecolor='#0066cc', alpha=0.9))
-ax.text(-15.0, 0.40, text_step2b_meas, color='#b36b00', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fffaf2', edgecolor='#ff9900', alpha=0.9))
+ax.text(-35.0, 0.2, text_step1_label, color='#b30000', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fff7f7', edgecolor='#e60000', alpha=0.9))
+ax.text(-25.0, 0.2, text_step2_label, color='#004499', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#f7faff', edgecolor='#0066cc', alpha=0.9))
+ax.text(-15.0, 0.2, text_step2b_meas, color='#b36b00', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fffaf2', edgecolor='#ff9900', alpha=0.9))
 # Calculated optimization targets
-ax.text(-30, 0.20, text_delta_final, color='#1f7a1f', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#f2fff2', edgecolor='#2eb82e', alpha=0.9))
-ax.text(-20, 0.20, text_area_final, color='#5c1da3', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fbf7ff', edgecolor='#8a2be2', alpha=0.9))
+ax.text(-30, 0.05, text_delta_final, color='#1f7a1f', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#f2fff2', edgecolor='#2eb82e', alpha=0.9))
+ax.text(-20, 0.05, text_area_final, color='#5c1da3', fontsize=8, ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.3', facecolor='#fbf7ff', edgecolor='#8a2be2', alpha=0.9))
 
 # --- VERTICAL CENTERLINES TRUNCATED CLEANLY UNDER RESPECTIVE PEAKS ---
 ax.vlines(X1, ymin=0, ymax=max_Y1, color='#b30000', linestyle='--', alpha=0.4)
@@ -272,35 +517,47 @@ ax.vlines(final_target_delta, ymin=0, ymax=final_delta_max, color='#1f7a1f', lin
 ax.vlines(X2b, ymin=0, ymax=max_Y2b, color='#ff9900', linestyle='--', alpha=0.4)
 ax.vlines(final_target_area, ymin=0, ymax=final_area_max, color='#5c1da3', linestyle='--', alpha=0.5)
 
-# --- SYSTEM METRIC PERFORMANCE BOX ---
-text_panel_deltas = (f"Multi-Stage Delta Analysis:\n"
-                     f"                 [Stage 1➔2]  [Stage 2➔2b]\n"
+# ==========================================
+# SYSTEM METRIC PERFORMANCE BOX (UPPER LEFT)
+# ==========================================
+error_status = "ENABLED" if ENABLE_SIGNAL_ERRORS else "DISABLED"
+motor_status = "ENABLED" if ENABLE_MOTOR_ERRORS else "DISABLED"
+
+text_panel_deltas = (f"SIGNAL ANALYSIS:\n"
+                     f"                 [Stage 1→2]  [Stage 2→2b]\n"
                      f"• Δ Max Value  :  {delta12_max:+.4f}      {delta2b2_max:+.4f}\n"
                      f"• Δ Min Value  :  {delta12_min:+.4f}      {delta2b2_min:+.4f}\n"
                      f"• Δ Amplitude  :  {delta12_delta:+.4f}      {delta2b2_delta:+.4f}\n"
                      f"• Δ Sweep Area :  {delta12_area:+.4f}      {delta2b2_area:+.4f}\n\n"
-                     f"Hardware Profile Coordinates:\n"
-                     f"• MEMs Vibration Asymmetry : {left_pct:.1f}% Left ◄► {right_pct:.1f}% Right\n"
-                     f"• Step 1 Position Vector   : {X1:.3f} µm\n"
-                     f"• Step 2 Position Vector   : {X2:.3f} µm (Move Dist: {step_dist_1_to_2:.3f}µm)\n"
-                     f"• Step 2b Position Vector  : {X2b:.3f} µm (Move Dist: {step_dist_2_to_2b:.3f}µm)\n\n"
-                     f"Ultimate Optimization Targets:\n"
-                     f"• Log-Delta Final Destination : {final_target_delta:.3f} µm\n"
-                     f"• Log-Area Final Destination  : {final_target_area:.3f} µm")
+                     f"HARDWARE COORDINATES:\n"
+                     f"• MEMs Vibration   : {left_pct:.1f}% Left ({left_wing:.2f}µm) ◄ {right_pct:.1f}% Right ({right_wing:.2f}µm)\n"
+                     f"• Step 1 Position  : {X1:.3f} µm\n"
+                     f"• Step 2 Position  : {X2:.3f} µm (Move: {step_dist_1_to_2:.3f}µm)\n"
+                     f"• Step 2b Position : {X2b:.3f} µm (Move: {step_dist_2_to_2b:.3f}µm)\n\n"
+                     f"ALGORITHM TARGETS:\n"
+                     f"• Amplitude Destination : {final_target_delta:.3f} µm\n"
+                     f"• Area Destination : {final_target_area:.3f} µm\n\n"
+                     f"ERROR STATUS:\n"
+                     f"• {error_status} Signal Errors | {motor_status} Motor Errors\n"
+                     f"• Step1 RMSE: {rmse_step1:.5f} | SNR: {snr_step1:.1f}dB\n"
+                     f"• Step2 RMSE: {rmse_step2:.5f} | SNR: {snr_step2:.1f}dB\n"
+                     f"• Step2b RMSE: {rmse_step2b:.5f} | SNR: {snr_step2b:.1f}dB")
 
 props_deltas = dict(boxstyle='round,pad=0.5', facecolor='#f7fff2', edgecolor='#4da61a', alpha=0.95)
-# FIXED: Relocated main analytics summary panel back to the upper left (x=0.02, ha='left')
-ax.text(0.02, 0.95, text_panel_deltas, transform=ax.transAxes, fontsize=9.5, verticalalignment='top', horizontalalignment='left', bbox=props_deltas, fontfamily='monospace')
+ax.text(0.02, 0.95, text_panel_deltas, transform=ax.transAxes, fontsize=9.5, 
+        verticalalignment='top', horizontalalignment='left', bbox=props_deltas, fontfamily='monospace')
 
 # Interface Formatting Configuration
-ax.set_title('Active Alignment Tracking for Gaussian Peak', fontsize=11, fontweight='bold')
+ax.set_title('Active Alignment Tracking for Gaussian Peak (With Errors)', fontsize=11, fontweight='bold')
 ax.set_xlabel('Spatial Coordinate Positioning (µm)')
 ax.set_ylabel('Coupled Intensity Efficiency')
-ax.set_xlim(-40, 25)
-
-# Enforce strict 0.0 to 1.2 viewport framing on the data face
+ax.set_xlim(-40, 30)
 ax.set_ylim(0.0, 1.2)
 ax.grid(True, linestyle=':', alpha=0.5)
 
 plt.tight_layout()
 plt.show()
+
+print("\n" + "="*80)
+print("SIMULATION COMPLETE")
+print("="*80)
