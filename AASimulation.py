@@ -12,7 +12,7 @@ VIBRATION_SPAN_BOUNDS    = (1.0, 2.0)
 MAX_ASYMMETRIC_SKEW      = 0.25
 
 # ==========================================
-# REALISTIC MOTOR IMPERFECTIONS (CAN BE DISABLED)
+# REALISTIC MOTOR IMPERFECTIONS
 # ==========================================
 ENABLE_MOTOR_ERRORS = True
 BACKLASH_UM = 1.8
@@ -122,15 +122,15 @@ print("="*80)
 
 print("\nMOTOR ERRORS:")
 if ENABLE_MOTOR_ERRORS:
-    print(f"   ✓ ENABLED - Backlash: {BACKLASH_UM}µm, Min Move: {MIN_MOVE_UM}µm, Step Error: ±{STEP_ERROR_PERCENT*100:.0f}%")
+    print(f"ENABLED - Backlash: {BACKLASH_UM}µm, Min Move: {MIN_MOVE_UM}µm, Step Error: ±{STEP_ERROR_PERCENT*100:.0f}%")
 else:
-    print(f"   ✗ DISABLED - Ideal motor")
+    print(f"DISABLED - Ideal motor")
 
 print("\nSIGNAL ERRORS:")
 if not ENABLE_SIGNAL_ERRORS:
-    print("   ✗ DISABLED - Clean signal")
+    print("DISABLED - Clean signal")
 else:
-    print(f"   ✓ ENABLED - Error Level: {ERROR_LEVEL:.1%}")
+    print(f"ENABLED - Error Level: {ERROR_LEVEL:.1%}")
     print(f"   • White Noise: {WHITE_NOISE_LEVEL * ERROR_LEVEL:.4f}")
     print(f"   • Shot Noise: {SHOT_NOISE_LEVEL * ERROR_LEVEL:.4f}")
     print(f"   • Quantization: {QUANTIZATION_BITS}-bit")
@@ -349,25 +349,6 @@ ax.fill_between(final_area_x_trace, final_area_y_trace, facecolor='none', edgeco
 ax.axvline(0, color='#404040', linestyle='--', alpha=0.6)
 
 # ==========================================
-# ADD CONFIDENCE INDICATOR
-# ==========================================
-avg_snr = (snr_step1 + snr_step2 + snr_step2b) / 3
-if avg_snr > 40:
-    confidence_color = '#4caf50'  # Green - High confidence
-    confidence_text = "HIGH CONFIDENCE"
-elif avg_snr > 30:
-    confidence_color = '#ff9800'  # Orange - Medium confidence
-    confidence_text = "MEDIUM CONFIDENCE"
-else:
-    confidence_color = '#f44336'  # Red - Low confidence
-    confidence_text = "LOW CONFIDENCE"
-
-ax.text(0.02, 0.02, f"{confidence_text}\n(SNR: {avg_snr:.1f}dB)", 
-        transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
-        bbox=dict(boxstyle='round,pad=0.3', facecolor=confidence_color, alpha=0.8, color='white'),
-        color='white', fontweight='bold')
-
-# ==========================================
 # ADD ZOOM INSET FOR PEAK REGION
 # ==========================================
 axins = inset_axes(ax, width="35%", height="35%",
@@ -394,14 +375,14 @@ axins.legend(fontsize=6)
 mark_inset(ax, axins, loc1=1, loc2=3, fc="none", ec="gray", linewidth=1, linestyle='--')
 
 # ==========================================
-# ZOOM INSET 1 - Step 1 Region (Top Right)
+# ZOOM INSET 1 - Step 1 Region
 # ==========================================
 axins_step1 = inset_axes(ax, width="32%", height="32%",
                         bbox_to_anchor=(0.55, 0.4, 0.30, 0.32),
                         bbox_transform=ax.transAxes, borderpad=0.5)
 
 # Plot zoomed region around Step 1 with wider range
-zoom1_xmin, zoom1_xmax = X1 - 4, X1 + 4
+zoom1_xmin, zoom1_xmax = min(X1_trace), max(X1_trace)
 zoom1_mask = (X1_trace >= zoom1_xmin) & (X1_trace <= zoom1_xmax)
 axins_step1.plot(X1_trace[zoom1_mask], Y1_trace[zoom1_mask], 
                 color='#e60000', linewidth=3, label='_nolegend_')
@@ -418,14 +399,14 @@ axins_step1.set_xlabel('Position (µm)', fontsize=8)
 axins_step1.set_ylabel('Intensity', fontsize=8)
 
 # ==========================================
-# ZOOM INSET 2 - Step 2 Region (Middle Right)
+# ZOOM INSET 2 - Step 2 Region
 # ==========================================
 axins_step2 = inset_axes(ax, width="32%", height="32%",
                         bbox_to_anchor=(0.7, 0.4, 0.30, 0.32),
                         bbox_transform=ax.transAxes, borderpad=0.5)
 
 # Plot zoomed region around Step 2
-zoom2_xmin, zoom2_xmax = X2 - 4, X2 + 4
+zoom2_xmin, zoom2_xmax = min(X2_trace), max(X2_trace)
 zoom2_mask = (X2_trace >= zoom2_xmin) & (X2_trace <= zoom2_xmax)
 axins_step2.plot(X2_trace[zoom2_mask], Y2_trace[zoom2_mask], 
                 color='#0066cc', linewidth=3, label='_nolegend_')
@@ -442,14 +423,14 @@ axins_step2.set_xlabel('Position (µm)', fontsize=8)
 axins_step2.set_ylabel('Intensity', fontsize=8)
 
 # ==========================================
-# ZOOM INSET 3 - Step 2b Region (Bottom Right)
+# ZOOM INSET 3 - Step 2b Region
 # ==========================================
 axins_step2b = inset_axes(ax, width="32%", height="32%",
                          bbox_to_anchor=(0.55, 0.15, 0.30, 0.32),
                          bbox_transform=ax.transAxes, borderpad=0.5)
 
 # Plot zoomed region around Step 2b
-zoom3_xmin, zoom3_xmax = X2b - 4, X2b + 4
+zoom3_xmin, zoom3_xmax = min(X2b_trace), max(X2b_trace)
 zoom3_mask = (X2b_trace >= zoom3_xmin) & (X2b_trace <= zoom3_xmax)
 axins_step2b.plot(X2b_trace[zoom3_mask], Y2b_trace[zoom3_mask], 
                  color='#ff9900', linewidth=3, label='_nolegend_')
@@ -483,7 +464,6 @@ algorithms = ['Amplitude', 'Area']
 errors = [pos_error_delta, pos_error_area]
 colors = ['#ff6b6b' if e > 0.3 else '#4ecdc4' for e in errors]
 
-# 1. Plot horizontally (barh) to match standard text layout flow
 bars = ax_error_meter.barh(algorithms, errors, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
 
 ax_error_meter.set_xlabel('Error (µm)', fontsize=7)
@@ -491,15 +471,13 @@ ax_error_meter.set_title('Algorithm Error', fontsize=8, fontweight='bold')
 ax_error_meter.tick_params(labelsize=7)
 ax_error_meter.grid(True, alpha=0.3, axis='x', linestyle=':')
 
-# 2. Add an explicit padding buffer to the right axis so values never clip
 max_err = max(errors) if max(errors) > 0 else 0.1
 ax_error_meter.set_xlim(0, max_err * 1.4)
 
-# 3. Universal text loop without if/else logic statements
 for bar, err in zip(bars, errors):
     ax_error_meter.text(
-        bar.get_width() + (max_err * 0.05),  # Positioned at a uniform distance to the right of each bar end
-        bar.get_y() + bar.get_height()/2.0,  # Exactly centered vertically on the bar line face
+        bar.get_width() + (max_err * 0.05),
+        bar.get_y() + bar.get_height()/2.0,
         f'{err:.3f} µm', 
         ha='left', va='center', 
         fontsize=7, fontweight='bold', color='#333333'
@@ -509,9 +487,8 @@ for bar, err in zip(bars, errors):
 # ADD PERFORMANCE SUMMARY BOX
 # ==========================================
 performance_text = f"PERFORMANCE SUMMARY:\n"
-performance_text += f"Better Algorithm: {'Area' if pos_error_area < pos_error_delta else 'Amplitude'}\n"
-performance_text += f"Positioning Error: {min(pos_error_delta, pos_error_area):.3f}µm\n"
-performance_text += f"SNR Avg: {avg_snr:.1f}dB"
+performance_text += f"Algorithm : {'Area' if pos_error_area < pos_error_delta else 'Amplitude'}\n"
+performance_text += f"Error : {min(pos_error_delta, pos_error_area):.3f}µm\n"
 
 props_perf = dict(boxstyle='round,pad=0.5', facecolor='#e8f5e9', edgecolor='#2e7d32', alpha=0.95)
 ax.text(0.98, 0.95, performance_text, transform=ax.transAxes, fontsize=9, 
