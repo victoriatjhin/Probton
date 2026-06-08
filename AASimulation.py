@@ -5,9 +5,9 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 # ==========================================
 # SYSTEM PARAMETERS & CONFIGURATION
 # ==========================================
+min_step = 1.8
+max_step = 12.0
 INITIAL_OFFSET_BOUNDS    = (-12.0, 12.0)
-STEP_1_TO_2_SIZE_BOUNDS  = (3.0, 6.0)
-STEP_2_TO_2B_SIZE_BOUNDS = (3.0, 6.0)
 VIBRATION_SPAN_BOUNDS    = (1.0, 2.0)
 MAX_ASYMMETRIC_SKEW      = 0.25
 
@@ -15,15 +15,15 @@ MAX_ASYMMETRIC_SKEW      = 0.25
 # REALISTIC MOTOR IMPERFECTIONS (CAN BE DISABLED)
 # ==========================================
 ENABLE_MOTOR_ERRORS = True
-BACKLASH_UM = 0.5
-MIN_MOVE_UM = 0.3
+BACKLASH_UM = 1.8
+MIN_MOVE_UM = 1.8
 STEP_ERROR_PERCENT = 0.05
 
 # ==========================================
 # SIGNAL ERROR INJECTION CONFIGURATION
 # ==========================================
 ENABLE_SIGNAL_ERRORS = True
-ERROR_LEVEL = 0.03
+ERROR_LEVEL = 0.05
 
 ENABLE_WHITE_NOISE = True
 WHITE_NOISE_LEVEL = 0.2
@@ -68,7 +68,8 @@ def inject_errors(y_clean):
         y_noisy += white_noise
     
     if ENABLE_SHOT_NOISE and SHOT_NOISE_LEVEL > 0:
-        shot_noise = np.random.poisson(y_noisy * 1000) / 1000 - y_noisy
+        lambda_param = np.clip(y_noisy * 1000, 0, None)
+        shot_noise = np.random.poisson(lambda_param) / 1000 - y_noisy
         y_noisy += shot_noise * SHOT_NOISE_LEVEL * ERROR_LEVEL
     
     if ENABLE_QUANTIZATION and QUANTIZATION_BITS > 0:
@@ -91,7 +92,7 @@ def inject_errors(y_clean):
                                                      SPIKE_AMPLITUDE * ERROR_LEVEL, 
                                                      len(spike_indices))
     
-    return np.clip(y_noisy, 0, 1)
+    return np.clip(y_noisy, 0, None)
 
 # ==========================================
 # HARDWARE EXECUTION WITH REALISTIC MOTOR ERRORS
@@ -139,8 +140,7 @@ else:
 # ==========================================
 # RANDOMIZED HARDWARE COMPONENT SELECTION
 # ==========================================
-step_dist_1_to_2  = np.random.uniform(*STEP_1_TO_2_SIZE_BOUNDS)
-step_dist_2_to_2b = np.random.uniform(*STEP_2_TO_2B_SIZE_BOUNDS)
+step_dist_1_to_2  = np.random.uniform(min_step, max_step)
 vibration_span    = np.random.uniform(*VIBRATION_SPAN_BOUNDS)
 
 skew_factor = np.random.uniform(-MAX_ASYMMETRIC_SKEW, MAX_ASYMMETRIC_SKEW)
@@ -206,9 +206,9 @@ G1 = (np.log(max_Y1) - np.log(min_Y1)) * slope_sign_step1
 G2 = (np.log(max_Y2) - np.log(min_Y2)) * slope_sign_step2
 
 denominator_delta = G2 - G1
-
 if abs(denominator_delta) > 1e-9:
-    final_target_delta = X2 - (G2 * (X2 - X1)) / denominator_delta
+    slope = (G2 - G1) / (X2 - X1)
+    final_target_delta = X1 - G1 / slope
 else:
     final_target_delta = X2
 
@@ -222,7 +222,29 @@ final_delta_area = calculate_area(final_delta_x_trace, final_delta_y_trace)
 # ==========================================
 # ALGORITHM TRACK 2: LOG-AREA
 # ==========================================
-area_heading = initial_direction if (area_A2 >= area_A1) else -initial_direction
+# Smart random
+area_ratio = area_A2 / area_A1 if area_A1 > 0 else 1.0
+direction_to_center = 1.0 if X2 < 0 else -1.0
+crossed_axis = (X1 * X2) < 0
+
+if not crossed_axis: # Always toward center
+    min_bound = min_step
+    max_bound = max_step
+    area_heading = direction_to_center
+    strategy = "NO CROSS - Head toward center, bounds unchanged"
+
+else: # Handle overshoot (Known by MEMs and readout wave)
+    # Adjust bounds for random steps based on area ratio
+    if area_ratio > 1.0: # Damped reverse
+        min_bound = min_step
+        max_bound = max(min_step, step_dist_1_to_2 / 2)  # Upper bound (Capped with min_step)
+        area_heading = direction_to_center
+    else: # Over-extended reverse
+        min_bound = step_dist_1_to_2 / 2  # Lower bound
+        max_bound = step_dist_1_to_2 / 2 * 1.05 # Conservative reverse in case initial at peak
+        area_heading = direction_to_center
+
+step_dist_2_to_2b = np.random.uniform(min_bound, max_bound)
 command_step2 = area_heading * step_dist_2_to_2b
 X2b, actual_move2 = execute_motor_step(command_step2, X2)
 X2b_trace, Y2b_clean, Y2b_noisy = sweep_sensor(X2b, return_clean=True)
@@ -362,7 +384,7 @@ axins.plot(final_area_x_trace[zoom_mask_area], final_area_y_trace[zoom_mask_area
 axins.axvline(0, color='#404040', linestyle='--', alpha=0.6, linewidth=1)
 axins.axhline(1.0, color='gray', linestyle=':', alpha=0.5)
 axins.set_xlim(zoom_xmin, zoom_xmax)
-axins.set_ylim(0.95, 1.02)
+axins.set_ylim(min(final_delta_min, final_area_min) * 0.99, max(final_delta_max, final_area_max) * 1.01)
 axins.grid(True, alpha=0.3, linestyle=':')
 axins.set_title('Zoom at Peak', fontsize=7)
 axins.tick_params(labelsize=6)
