@@ -7,10 +7,11 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 # ==========================================
 MIN_STEP = 3
 MAX_STEP = 10
-MOTOR_GEAR_RATIO = 1.8 
+MOTOR_GEAR_RATIO = 1.8      # Gear ratio in response to control signal in μm
 INITIAL_OFFSET_BOUNDS    = (-12.0, 12.0)
 VIBRATION_SPAN_BOUNDS    = (1.0, 2.0)
 MAX_ASYMMETRIC_SKEW      = 0.25
+ALIGNMENT_THRESHOLD = 1.8   # Precision in um for stop iterating algorithm
 
 # ==========================================
 # REALISTIC MOTOR IMPERFECTIONS
@@ -154,11 +155,11 @@ LOG_TABLE = None
 def init_log_table():
     global LOG_TABLE
     max_code = 2**BITS - 1
-    LOG_TABLE = np.zeros(256)
-    for code in range(256):
+    LOG_TABLE = np.zeros(2**BITS)
+    for code in range(2**BITS):
         area = code / max_code
         # Add a small epsilon to avoid log(0)
-        LOG_TABLE[code] = np.log(area + 1e-10)
+        LOG_TABLE[code] = np.log(max(area, + 1e-6))
 
 def log_8bit(x):
     """Return log(x) using an 8‑bit lookup table. x must be in [0,1]."""
@@ -216,6 +217,8 @@ def execute_motor_step(command_code, current_position):
 print("\n" + "="*80)
 print("SIMULATION CONFIGURATION")
 print("="*80)
+
+print("\nALGORITHM TARGETS: ({ALIGNMENT_THRESHOLD:.3f} µm")
 
 print("\nMOTOR ERRORS:")
 if ENABLE_MOTOR_ERRORS:
@@ -351,7 +354,7 @@ G1 = (log_8bit(max_Y1_q) - log_8bit(min_Y1_q)) * slope_sign_step1
 G2 = (log_8bit(max_Y2_q) - log_8bit(min_Y2_q)) * slope_sign_step2
 
 denominator_delta = G2 - G1
-if abs(denominator_delta) > 1e-9:
+if abs(denominator_delta) > 1e-3:
     # slope = (G2 - G1) / (X2 - X1)
     # final_target_delta = X1 - G1 / slope
     command_step_delta = -G2 * command_step1 / denominator_delta
@@ -366,6 +369,70 @@ final_delta_max = np.max(final_delta_y_trace)
 final_delta_min = np.min(final_delta_y_trace)
 final_delta_val = final_delta_max - final_delta_min
 final_delta_area = calculate_area(final_delta_x_trace, final_delta_y_trace)
+
+# =========================================================================
+# TRACKING LOOP (Evaluates condition AFTER initial sampling)
+# =========================================================================
+delta_y1_trace = Y2_trace
+delta_max_y1  = max_Y2
+delta_min_y1  = min_Y2
+
+delta_y2_trace = final_delta_y_trace
+delta_max_y2  = final_delta_max
+delta_min_y2  = final_delta_min
+
+delta_x2      = final_target_delta
+delta_step   = command_step_delta
+
+converge_delta = 1
+delta_history = []
+
+while abs(final_target_delta) > ALIGNMENT_THRESHOLD and converge_delta < 100:
+    converge_delta += 1
+    
+    slope_sign_step1 = 1.0 if delta_y1_trace[-1] >= delta_y1_trace[0] else -1.0
+    slope_sign_step2 = 1.0 if delta_y2_trace[-1] >= delta_y2_trace[0] else -1.0
+
+    max_Y1_q = quantize_amplitude(delta_max_y1)
+    min_Y1_q = quantize_amplitude(delta_min_y1)
+    max_Y2_q = quantize_amplitude(delta_max_y2)
+    min_Y2_q = quantize_amplitude(delta_min_y2)
+
+    G1 = (log_8bit(max_Y1_q) - log_8bit(min_Y1_q)) * slope_sign_step1
+    G2 = (log_8bit(max_Y2_q) - log_8bit(min_Y2_q)) * slope_sign_step2
+
+    denominator_delta = G2 - G1
+    if abs(denominator_delta) > 1e-3:
+        command_step_delta = -G2 * delta_step / denominator_delta
+    else:
+        direction_to_center = 1.0 if delta_x2 < 0 else -1.0
+        command_step_delta = direction_to_center # Apply force nudge to prevent stuck in loop
+
+    # Execute next tracking step
+    final_target_delta, _, _ = execute_motor_step(command_step_delta, delta_x2)
+
+    delta_history.append([int(round(command_step_delta)), final_target_delta])
+
+    # Sample new data trace
+    final_delta_x_trace, final_delta_clean, final_delta_noisy = sweep_sensor(final_target_delta, return_clean=True)
+    final_delta_y_trace = final_delta_noisy
+    final_delta_max = np.max(final_delta_y_trace)
+    final_delta_min = np.min(final_delta_y_trace)
+    final_delta_val = final_delta_max - final_delta_min
+    final_delta_area = calculate_area(final_delta_x_trace, final_delta_y_trace)
+
+    # Shift streaming data frames forward for the next iteration
+    delta_y1_trace = delta_y2_trace
+    delta_max_y1  = delta_max_y2
+    delta_min_y1  = delta_min_y2
+    
+    delta_y2_trace = final_delta_y_trace
+    delta_max_y2  = final_delta_max
+    delta_min_y2  = final_delta_min
+    
+    delta_x2      = final_target_delta
+    delta_step    = command_step_delta
+
 
 # ==========================================
 # ALGORITHM TRACK 2: LOG-AREA
@@ -409,9 +476,13 @@ ln_A2b = log_8bit(area_A2b)
 
 h1 = command_step1
 h2 = command_step2
-denominator_area = (ln_A2b - ln_A2) / h2 - (ln_A2 - ln_A1) / h1
 
-if abs(denominator_area) > 1e-9:
+if abs(h1) < 1e-3 or abs(h2) < 1e-3:
+    denominator_area = 0.0
+else:
+    denominator_area = (ln_A2b - ln_A2) / h2 - (ln_A2 - ln_A1) / h1
+
+if abs(denominator_area) > 1e-3 and abs(h1 + h2) > 1e-3 and abs(ln_A2 - ln_A1) > 1e-3:
     command_step_area = (-h1 / 2.0 - h2) - ((ln_A2 - ln_A1) / (2.0 * h1 * denominator_area)) * (h1 + h2) # (X1 + X2) / 2.0 - ((ln_A2 - ln_A1) / (2.0 * h1 * denominator_area)) * (h1 + h2)
 else:
     command_step_area = 0
@@ -423,6 +494,61 @@ final_area_max = np.max(final_area_y_trace)
 final_area_min = np.min(final_area_y_trace)
 final_area_delta = final_area_max - final_area_min
 final_area_val = calculate_area(final_area_x_trace, final_area_y_trace)
+
+# =========================================================================
+# TRACKING LOOP (Evaluates condition AFTER initial sampling)
+# =========================================================================
+area_ln_A1 = ln_A2
+area_h1    = h2
+
+area_ln_A2 = ln_A2b
+area_h2    = command_step_area
+
+area_ln_A2b = log_8bit(calculate_area(final_area_x_trace, final_area_y_trace))
+area_X2b   = final_target_area
+
+converge_area = 1
+area_history = []
+
+while abs(final_target_area) > ALIGNMENT_THRESHOLD and converge_area < 100:
+    converge_area += 1
+
+    if abs(area_h1) < 1e-3 or abs(area_h2) < 1e-3:
+        denominator_area = 0.0
+    else:
+        denominator_area = (area_ln_A2b - area_ln_A2) / area_h2 - (area_ln_A2 - area_ln_A1) / area_h1
+
+    if abs(denominator_area) > 1e-3 and abs(area_h1 + area_h2) > 1e-3 and abs(area_ln_A2 - area_ln_A1) > 1e-3:
+        command_step_area = (-area_h1 / 2.0 - area_h2) - ((area_ln_A2 - area_ln_A1) / (2.0 * area_h1 * denominator_area)) * (area_h1 + area_h2)
+    else:
+        direction_to_center = 1.0 if area_X2b < 0 else -1.0
+        command_step_area = direction_to_center # Apply force nudge to prevent stuck in loop
+    
+    if np.isnan(command_step_area) or np.isinf(command_step_area):
+        direction_to_center = 1.0 if area_X2b < 0 else -1.0
+        command_step_area = direction_to_center
+    
+    # Execute next tracking step
+    final_target_area, _, _ = execute_motor_step(command_step_area, area_X2b)
+    
+    area_history.append([int(round(command_step_area)), final_target_area])
+
+    # Sample new data trace
+    final_area_x_trace, final_area_clean, final_area_noisy = sweep_sensor(final_target_delta, return_clean=True)
+    final_area_y_trace = final_area_noisy
+    final_area_max = np.max(final_area_y_trace)
+    final_area_min = np.min(final_area_y_trace)
+    final_area_delta = final_area_max - final_area_min
+    
+    # Shift streaming data frames forward for the next iteration
+    area_ln_A1  = area_ln_A2
+    area_h1     = area_h2
+    
+    area_ln_A2  = area_ln_A2b
+    area_h2     = command_step_area
+    
+    area_ln_A2b = log_8bit(calculate_area(final_area_x_trace, final_area_y_trace))
+    area_X2b    = final_target_delta
 
 # ==========================================
 # CALCULATE DELTAS
@@ -458,6 +584,22 @@ pos_error_area = abs(final_target_area)
 # PRINT RESULTS
 # ==========================================
 print(f"\nRESULTS:")
+print("\nAmplitude Tracking History (command steps, resulting position in µm):")
+if delta_history and isinstance(delta_history[0], list):
+    for i, (cmd, pos) in enumerate(delta_history, 1):
+        print(f"  Step {i:0d}: [{cmd:+0d}] position = {pos:8.3f} µm")
+else:
+    print(f"  {delta_history}")   # fallback
+print(f"  Total amplitude steps: {len(delta_history)}")
+
+print("\nArea Tracking History (command steps, resulting position in µm):")
+if area_history and isinstance(area_history[0], list):
+    for i, (cmd, pos) in enumerate(area_history, 1):
+        print(f"  Step {i:0d}: [{cmd:+0d}] position = {pos:8.3f} µm")
+else:
+    print(f"  {area_history}")   # fallback
+print(f"  Total area steps: {len(area_history)}")
+
 print(f"   Amplitude Error: {pos_error_delta:.4f} µm")
 print(f"   Area Error:  {pos_error_area:.4f} µm")
 print(f"   Better: {'Amplitude' if pos_error_delta < pos_error_area else 'Area'}")
@@ -674,19 +816,20 @@ vtt_status = "ENABLED" if ENABLE_VTT_ERRORS else "DISABLED"
 bit_status = 'ENABLED' if ENABLE_BIT_LOG else 'DISABLED'
 
 text_panel_deltas = (f"SIGNAL ANALYSIS:\n"
-                     f"                 [Stage 1→2]  [Stage 2→2b]\n"
-                     f"• Δ Max Value  :  {delta12_max:+.4f}      {delta2b2_max:+.4f}\n"
-                     f"• Δ Min Value  :  {delta12_min:+.4f}      {delta2b2_min:+.4f}\n"
-                     f"• Δ Amplitude  :  {delta12_delta:+.4f}      {delta2b2_delta:+.4f}\n"
-                     f"• Δ Sweep Area :  {delta12_area:+.4f}      {delta2b2_area:+.4f}\n\n"
+                     f"                 [Stage 1→2] | [Stage 2→2b]\n"
+                     f"• Δ Max Value  :  {delta12_max:+.4f}    | {delta2b2_max:+.4f}\n"
+                     f"• Δ Min Value  :  {delta12_min:+.4f}    | {delta2b2_min:+.4f}\n"
+                     f"• Δ Amplitude  :  {delta12_delta:+.4f}    | {delta2b2_delta:+.4f}\n"
+                     f"• Δ Sweep Area :  {delta12_area:+.4f}    | {delta2b2_area:+.4f}\n\n"
                      f"HARDWARE COORDINATES:\n"
                      f"• MEMs Vibration   : {left_pct:.1f}% Left ({left_wing:.2f}µm) ◄ {right_pct:.1f}% Right ({right_wing:.2f}µm)\n"
                      f"• Step 1 Position  : {X1:.3f} µm\n"
-                     f"• Step 2 Position  : {X2:.3f} µm (Move: {actual_move12:.3f}µm)\n"
-                     f"• Step 2b Position : {X2b:.3f} µm (Move: {actual_move2b2:.3f}µm)\n\n"
-                     f"ALGORITHM TARGETS:\n"
-                     f"• Amplitude Destination : {final_target_delta:.3f} µm\n"
-                     f"• Area Destination : {final_target_area:.3f} µm\n\n"
+                     f"• Step 2 Position  : {X2:.3f} µm (Move: [{command_step1:+.0f}] {actual_move12:+.3f}µm )\n"
+                     f"• Step 2b Position : {X2b:.3f} µm (Move: [{command_step2:+.0f}] {actual_move2b2:+.3f}µm)\n\n"
+                     f"ALGORITHM TARGETS: ({ALIGNMENT_THRESHOLD:.3f} µm)\n"
+                     f"              [Steps] | [Error]   | [Error in Gear Ratio]\n"
+                     f"• Amplitude : [{converge_delta}]     | {final_target_delta:+.3f} µm | {final_target_delta/MOTOR_GEAR_RATIO:+.3f}\n"
+                     f"• Area      : [{converge_area}]     | {final_target_area:+.3f} µm | {final_target_area/MOTOR_GEAR_RATIO:+.3f}\n\n"
                      f"ERROR STATUS:\n"
                      f"• {motor_status} Motor | {error_status} Signal | {vtt_status} VTT | {bit_status} Bit\n"
                      f"• Step1 RMSE: {rmse_step1:.5f} | SNR: {snr_step1:.1f}dB\n"
