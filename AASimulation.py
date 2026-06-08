@@ -5,8 +5,9 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 # ==========================================
 # SYSTEM PARAMETERS & CONFIGURATION
 # ==========================================
-min_step = 1.8
-max_step = 12.0
+MIN_STEP = 3
+MAX_STEP = 10
+MOTOR_GEAR_RATIO = 1.8 
 INITIAL_OFFSET_BOUNDS    = (-12.0, 12.0)
 VIBRATION_SPAN_BOUNDS    = (1.0, 2.0)
 MAX_ASYMMETRIC_SKEW      = 0.25
@@ -16,8 +17,8 @@ MAX_ASYMMETRIC_SKEW      = 0.25
 # ==========================================
 ENABLE_MOTOR_ERRORS = True
 BACKLASH_UM = 1.8
-MIN_MOVE_UM = 1.8
-STEP_ERROR_PERCENT = 0.05
+MIN_MOVE_UM = 1.8           # minimum movement in μm
+STEP_ERROR_PERCENT = 0.01   # ±1% step error
 
 # ==========================================
 # SIGNAL ERROR INJECTION CONFIGURATION
@@ -25,14 +26,12 @@ STEP_ERROR_PERCENT = 0.05
 ENABLE_SIGNAL_ERRORS = True
 ERROR_LEVEL = 0.05
 
+# Analog domain errors
 ENABLE_WHITE_NOISE = True
 WHITE_NOISE_LEVEL = 0.2
 
 ENABLE_SHOT_NOISE = True
 SHOT_NOISE_LEVEL = 0.15
-
-ENABLE_QUANTIZATION = True
-QUANTIZATION_BITS = 10
 
 ENABLE_SINE_RIPPLE = True
 SINE_RIPPLE_AMPLITUDE = 0.1
@@ -46,18 +45,36 @@ SPIKE_RATE = 0.1
 SPIKE_AMPLITUDE = 0.5
 
 # ==========================================
-# AREA CALCULATION (Compatible with all numpy versions)
+# VOLTAGE-TO-TIME CONVERSION (8-bit)
 # ==========================================
-def calculate_area(x, y):
-    try:
-        return np.trapezoid(y, x)
-    except AttributeError:
-        return np.trapz(y, x)
+ENABLE_VTT_ERRORS = True
+VTT_VREF = 2.0
+VTT_OFFSET_LSB = 1.5
+VTT_GAIN_ERROR = 0.02
+VTT_CLOCK_JITTER_NS = 1
+VTT_NONLINEARITY_LSB = 0.5
 
 # ==========================================
-# ERROR INJECTION FUNCTION
+# 8-BIT QUANTIZATION CONFIGURATION
+# ==========================================
+BITS = 8                        # number of bits (signed or unsigned)
+MOTOR_COMMAND_SIGNED = True     # True = signed (-128..127), False = unsigned (0..255)
+
+# The full-scale range in µm is automatically computed:
+if MOTOR_COMMAND_SIGNED:
+    MAX_CODE = 2**(BITS-1) - 1   # e.g., 127
+    MIN_CODE = -MAX_CODE - 1                   # e.g., -128 (if 8-bit signed)
+else:
+    MAX_CODE = 2**BITS - 1       # e.g., 255
+    MIN_CODE = 0
+
+ENABLE_BIT_LOG = True          # Use 8-bit log lookup table (instead of np.log)
+
+# ==========================================
+# ERROR INJECTION FUNCTION (Analog domain only)
 # ==========================================
 def inject_errors(y_clean):
+    """Analog domain errors only (photocurrent, TIA, filter)"""
     if not ENABLE_SIGNAL_ERRORS:
         return y_clean
     
@@ -72,9 +89,7 @@ def inject_errors(y_clean):
         shot_noise = np.random.poisson(lambda_param) / 1000 - y_noisy
         y_noisy += shot_noise * SHOT_NOISE_LEVEL * ERROR_LEVEL
     
-    if ENABLE_QUANTIZATION and QUANTIZATION_BITS > 0:
-        levels = 2 ** QUANTIZATION_BITS
-        y_noisy = np.round(y_noisy * levels) / levels
+    # QUANTIZATION REMOVED - now in VTT
     
     if ENABLE_SINE_RIPPLE and SINE_RIPPLE_AMPLITUDE > 0:
         x_pos = np.linspace(0, 2*np.pi, len(y_noisy))
@@ -95,23 +110,105 @@ def inject_errors(y_clean):
     return np.clip(y_noisy, 0, None)
 
 # ==========================================
+# VOLTAGE-TO-TIME CONVERSION ERRORS (8-bit)
+# ==========================================
+
+def voltage_to_time_convert(area_analog):
+    """
+    Simulate 8-bit Voltage-to-Time conversion with realistic errors
+    area_analog: true area value from integrator (0-2.0 range)
+    returns: quantized area with VTT errors
+    """
+    if not ENABLE_VTT_ERRORS:
+        return area_analog
+    
+    # Ideal code (8-bit)
+    max_code = 2**BITS - 1
+    ideal_code = int(area_analog / VTT_VREF * max_code)
+    ideal_code = np.clip(ideal_code, 0, max_code)
+    
+    # 1. Comparator offset (adds constant offset)
+    offset_codes = np.random.normal(0, VTT_OFFSET_LSB)
+    
+    # 2. Current source noise (gain error)
+    gain_error = 1 + np.random.normal(0, VTT_GAIN_ERROR)
+    
+    # 3. Clock jitter (adds random timing noise)
+    jitter_codes = np.random.normal(0, VTT_CLOCK_JITTER_NS / 10)
+    
+    # 4. Nonlinearity (INL)
+    inl_error = np.random.uniform(-VTT_NONLINEARITY_LSB, VTT_NONLINEARITY_LSB)
+    
+    # Combine errors
+    noisy_code = ideal_code * gain_error + offset_codes + jitter_codes + inl_error
+    noisy_code = int(np.clip(noisy_code, 0, max_code))
+    
+    # Convert back to area
+    area_vtt = noisy_code * VTT_VREF / max_code
+    
+    return area_vtt
+
+# Precompute log table (256 entries) using the same VTT reference
+LOG_TABLE = None
+
+def init_log_table():
+    global LOG_TABLE
+    max_code = 2**BITS - 1
+    LOG_TABLE = np.zeros(256)
+    for code in range(256):
+        area = code / max_code
+        # Add a small epsilon to avoid log(0)
+        LOG_TABLE[code] = np.log(area + 1e-10)
+
+def log_8bit(x):
+    """Return log(x) using an 8‑bit lookup table. x must be in [0,1]."""
+    if not ENABLE_BIT_LOG:
+        return np.log(x + 1e-10)
+    # ---------- 8-bit LUT version ----------
+    if LOG_TABLE is None:
+        init_log_table()
+    max_code = 2**BITS - 1
+    code = int(round(x * max_code))
+    code = max(0, min(max_code, code))
+    return LOG_TABLE[code]
+
+def quantize_amplitude(amp):
+    """Quantize amplitude to bits. amp must be in [0,1]."""
+    if not ENABLE_BIT_LOG:
+        return amp
+    max_code = 2**BITS - 1
+    code = int(round(amp * max_code))
+    code = max(0, min(max_code, code))
+    return code / max_code
+
+# ==========================================
 # HARDWARE EXECUTION WITH REALISTIC MOTOR ERRORS
 # ==========================================
-def execute_motor_step(command_um, current_position):
+def execute_motor_step(command_code, current_position):
+    """
+    command_code : 8-bit integer control signal (-128..127 or 0..255)
+    Returns: new_position (in simulation units), actual_move (simulation units), command_code
+    """
+    # Clamp to valid 8-bit range (signed or unsigned)
+    code = int(round(command_code))
+    code = max(MIN_CODE, min(MAX_CODE, code))
+
+    # Apply electronic gear ratio: convert code to desired move in simulation units
+    desired_um = code * MOTOR_GEAR_RATIO
+
+    # ---- Motor imperfections (same units) ----
     if not ENABLE_MOTOR_ERRORS:
-        return current_position + command_um, command_um
-    
-    if abs(command_um) < BACKLASH_UM:
-        return current_position, 0
-    
-    actual_move = command_um * (1 + np.random.uniform(-STEP_ERROR_PERCENT, STEP_ERROR_PERCENT))
-    
+        return current_position + desired_um, desired_um, code
+
+    if abs(desired_um) < BACKLASH_UM:
+        return current_position, 0, code
+
+    actual_move = desired_um * (1 + np.random.uniform(-STEP_ERROR_PERCENT, STEP_ERROR_PERCENT))
     if abs(actual_move) < MIN_MOVE_UM:
         actual_move = 0
-    
-    actual_move += np.random.normal(0, 0.05)
-    
-    return current_position + actual_move, actual_move
+    actual_move += np.random.normal(0, 0.05)   # small random jitter
+
+    return current_position + actual_move, actual_move, code
 
 # ==========================================
 # PRINT ERROR CONFIGURATION
@@ -124,23 +221,46 @@ print("\nMOTOR ERRORS:")
 if ENABLE_MOTOR_ERRORS:
     print(f"ENABLED - Backlash: {BACKLASH_UM}µm, Min Move: {MIN_MOVE_UM}µm, Step Error: ±{STEP_ERROR_PERCENT*100:.0f}%")
 else:
-    print(f"DISABLED - Ideal motor")
+    print("DISABLED - Ideal motor")
 
-print("\nSIGNAL ERRORS:")
+print("\nANALOG SIGNAL ERRORS:")
 if not ENABLE_SIGNAL_ERRORS:
-    print("DISABLED - Clean signal")
+    print("   DISABLED - Clean signal")
 else:
-    print(f"ENABLED - Error Level: {ERROR_LEVEL:.1%}")
-    print(f"   • White Noise: {WHITE_NOISE_LEVEL * ERROR_LEVEL:.4f}")
-    print(f"   • Shot Noise: {SHOT_NOISE_LEVEL * ERROR_LEVEL:.4f}")
-    print(f"   • Quantization: {QUANTIZATION_BITS}-bit")
-    print(f"   • Sine Ripple: {SINE_RIPPLE_AMPLITUDE * ERROR_LEVEL:.4f}")
-    print(f"   • Offset Drift: {OFFSET_DRIFT * ERROR_LEVEL:.4f}")
+    print(f"   ENABLED - Error Level: {ERROR_LEVEL:.1%}")
+    print(f"      • White Noise: {WHITE_NOISE_LEVEL * ERROR_LEVEL:.4f}")
+    print(f"      • Shot Noise: {SHOT_NOISE_LEVEL * ERROR_LEVEL:.4f}")
+    print(f"      • Sine Ripple: {SINE_RIPPLE_AMPLITUDE * ERROR_LEVEL:.4f}")
+    print(f"      • Offset Drift: {OFFSET_DRIFT * ERROR_LEVEL:.4f}")
+
+print("\nVOLTAGE-TO-TIME CONVERSION (8-bit):")
+if ENABLE_VTT_ERRORS:
+    print(f"   ENABLED - {BITS}-bit resolution")
+    print(f"      • VREF: {VTT_VREF}V")
+    print(f"      • Comparator Offset: {VTT_OFFSET_LSB} LSB")
+    print(f"      • Gain Error: {VTT_GAIN_ERROR*100:.1f}%")
+    print(f"      • Clock Jitter: {VTT_CLOCK_JITTER_NS}ns")
+    print(f"      • INL: ±{VTT_NONLINEARITY_LSB} LSB")
+else:
+    print("   DISABLED - Ideal area")
+
+print("\nBIT LOG & AMPLITUDE QUANTIZATION:")
+if ENABLE_BIT_LOG:
+    print(f"   ENABLED - {BITS}-bit log lookup table (normalized [0,1])")
+else:
+    print("   DISABLED - using floating-point np.log")
+print(f"   Amplitude quantization: {'ENABLED' if ENABLE_BIT_LOG else 'DISABLED'} (range [0,1], {BITS} bits)")
+
+print("\nMOTOR COMMAND INTERFACE:")
+print(f"   Command type: {'signed' if MOTOR_COMMAND_SIGNED else 'unsigned'} 8-bit")
+print(f"   Command range: {MIN_CODE}..{MAX_CODE}")
+print(f"   Gear ratio: {MOTOR_GEAR_RATIO} µm per count")
+print(f"   Motor errors: {'ENABLED' if ENABLE_MOTOR_ERRORS else 'DISABLED'}")
 
 # ==========================================
 # RANDOMIZED HARDWARE COMPONENT SELECTION
 # ==========================================
-step_dist_1_to_2  = np.random.uniform(min_step, max_step)
+step_dist_1_to_2 = np.random.randint(MIN_STEP, MAX_STEP + 1)
 vibration_span    = np.random.uniform(*VIBRATION_SPAN_BOUNDS)
 
 skew_factor = np.random.uniform(-MAX_ASYMMETRIC_SKEW, MAX_ASYMMETRIC_SKEW)
@@ -171,6 +291,26 @@ def sweep_sensor(center_position, return_clean=False):
     return x_trace, y_trace_noisy
 
 # ==========================================
+# AREA CALCULATION (Compatible with all numpy versions)
+# ==========================================
+def calculate_area(x, y):
+    """
+    Calculate area under curve using trapezoidal rule,
+    then apply Voltage-to-Time conversion (8-bit emulation)
+    """
+    # Calculate area using trapezoidal rule
+    try:
+        area = np.trapezoid(y, x)
+    except AttributeError:
+        area = np.trapz(y, x)
+    
+    # Apply Voltage-to-Time conversion (8-bit with errors) -> result in volts [0, VTT_VREF]
+    area_v = voltage_to_time_convert(area)
+    
+    # Normalize to [0,1]
+    return area_v / VTT_VREF
+
+# ==========================================
 # PHYSICAL STEP 1
 # ==========================================
 X1 = np.random.uniform(*INITIAL_OFFSET_BOUNDS)
@@ -187,7 +327,7 @@ area_A1 = calculate_area(X1_trace, Y1_trace)
 # ==========================================
 initial_direction = 1.0 if X1 < 0 else -1.0
 command_step1 = initial_direction * step_dist_1_to_2
-X2, actual_move1 = execute_motor_step(command_step1, X1)
+X2, actual_move12, _ = execute_motor_step(command_step1, X1)
 X2_trace, Y2_clean, Y2_noisy = sweep_sensor(X2, return_clean=True)
 Y2_trace = Y2_noisy
 
@@ -202,15 +342,23 @@ area_A2 = calculate_area(X2_trace, Y2_trace)
 slope_sign_step1 = 1.0 if Y1_trace[-1] >= Y1_trace[0] else -1.0
 slope_sign_step2 = 1.0 if Y2_trace[-1] >= Y2_trace[0] else -1.0
 
-G1 = (np.log(max_Y1) - np.log(min_Y1)) * slope_sign_step1
-G2 = (np.log(max_Y2) - np.log(min_Y2)) * slope_sign_step2
+max_Y1_q = quantize_amplitude(max_Y1)
+min_Y1_q = quantize_amplitude(min_Y1)
+max_Y2_q = quantize_amplitude(max_Y2)
+min_Y2_q = quantize_amplitude(min_Y2)
+
+G1 = (log_8bit(max_Y1_q) - log_8bit(min_Y1_q)) * slope_sign_step1
+G2 = (log_8bit(max_Y2_q) - log_8bit(min_Y2_q)) * slope_sign_step2
 
 denominator_delta = G2 - G1
 if abs(denominator_delta) > 1e-9:
-    slope = (G2 - G1) / (X2 - X1)
-    final_target_delta = X1 - G1 / slope
+    # slope = (G2 - G1) / (X2 - X1)
+    # final_target_delta = X1 - G1 / slope
+    command_step_delta = -G2 * command_step1 / denominator_delta
 else:
-    final_target_delta = X2
+    command_step_delta = 0
+
+final_target_delta, _, _ = execute_motor_step(command_step_delta, X2)
 
 final_delta_x_trace, final_delta_clean, final_delta_noisy = sweep_sensor(final_target_delta, return_clean=True)
 final_delta_y_trace = final_delta_noisy
@@ -228,25 +376,25 @@ direction_to_center = 1.0 if X2 < 0 else -1.0
 crossed_axis = (X1 * X2) < 0
 
 if not crossed_axis: # Always toward center
-    min_bound = min_step
-    max_bound = max_step
+    min_bound = MIN_STEP
+    max_bound = MAX_STEP
     area_heading = direction_to_center
     strategy = "NO CROSS - Head toward center, bounds unchanged"
 
 else: # Handle overshoot (Known by MEMs and readout wave)
     # Adjust bounds for random steps based on area ratio
     if area_ratio > 1.0: # Damped reverse
-        min_bound = min_step
-        max_bound = max(min_step, step_dist_1_to_2 / 2)  # Upper bound (Capped with min_step)
+        min_bound = MIN_STEP
+        max_bound = int(round(max(MIN_STEP, step_dist_1_to_2 / 2)))  # Upper bound (Capped with min_step)
         area_heading = direction_to_center
     else: # Over-extended reverse
-        min_bound = step_dist_1_to_2 / 2  # Lower bound
-        max_bound = step_dist_1_to_2 / 2 * 1.05 # Conservative reverse in case initial at peak
+        min_bound = int(round(step_dist_1_to_2 / 2))  # Lower bound
+        max_bound = int(round(step_dist_1_to_2 / 2 * 1.05))  # Conservative reverse in case initial at peak
         area_heading = direction_to_center
 
-step_dist_2_to_2b = np.random.uniform(min_bound, max_bound)
+step_dist_2_to_2b = np.random.randint(min_bound, max_bound + 1)
 command_step2 = area_heading * step_dist_2_to_2b
-X2b, actual_move2 = execute_motor_step(command_step2, X2)
+X2b, actual_move2b2, _ = execute_motor_step(command_step2, X2)
 X2b_trace, Y2b_clean, Y2b_noisy = sweep_sensor(X2b, return_clean=True)
 Y2b_trace = Y2b_noisy
 
@@ -255,19 +403,20 @@ min_Y2b = np.min(Y2b_trace)
 delta_Y2b = max_Y2b - min_Y2b
 area_A2b = calculate_area(X2b_trace, Y2b_trace)
 
-ln_A1  = np.log(area_A1)
-ln_A2  = np.log(area_A2)
-ln_A2b = np.log(area_A2b)
+ln_A1  = log_8bit(area_A1)
+ln_A2  = log_8bit(area_A2)
+ln_A2b = log_8bit(area_A2b)
 
-h1 = X2 - X1
-h2 = X2b - X2
+h1 = command_step1
+h2 = command_step2
 denominator_area = (ln_A2b - ln_A2) / h2 - (ln_A2 - ln_A1) / h1
 
 if abs(denominator_area) > 1e-9:
-    final_target_area = (X1 + X2) / 2.0 - ((ln_A2 - ln_A1) / (2.0 * h1 * denominator_area)) * (h1 + h2)
+    command_step_area = (-h1 / 2.0 - h2) - ((ln_A2 - ln_A1) / (2.0 * h1 * denominator_area)) * (h1 + h2) # (X1 + X2) / 2.0 - ((ln_A2 - ln_A1) / (2.0 * h1 * denominator_area)) * (h1 + h2)
 else:
-    final_target_area = X2
+    command_step_area = 0
 
+final_target_area, _, _ = execute_motor_step(command_step_area, X2b)
 final_area_x_trace, final_area_clean, final_area_noisy = sweep_sensor(final_target_area, return_clean=True)
 final_area_y_trace = final_area_noisy
 final_area_max = np.max(final_area_y_trace)
@@ -521,6 +670,8 @@ ax.vlines(final_target_area, ymin=0, ymax=final_area_max, color='#5c1da3', lines
 # ==========================================
 error_status = "ENABLED" if ENABLE_SIGNAL_ERRORS else "DISABLED"
 motor_status = "ENABLED" if ENABLE_MOTOR_ERRORS else "DISABLED"
+vtt_status = "ENABLED" if ENABLE_VTT_ERRORS else "DISABLED"
+bit_status = 'ENABLED' if ENABLE_BIT_LOG else 'DISABLED'
 
 text_panel_deltas = (f"SIGNAL ANALYSIS:\n"
                      f"                 [Stage 1→2]  [Stage 2→2b]\n"
@@ -531,13 +682,13 @@ text_panel_deltas = (f"SIGNAL ANALYSIS:\n"
                      f"HARDWARE COORDINATES:\n"
                      f"• MEMs Vibration   : {left_pct:.1f}% Left ({left_wing:.2f}µm) ◄ {right_pct:.1f}% Right ({right_wing:.2f}µm)\n"
                      f"• Step 1 Position  : {X1:.3f} µm\n"
-                     f"• Step 2 Position  : {X2:.3f} µm (Move: {step_dist_1_to_2:.3f}µm)\n"
-                     f"• Step 2b Position : {X2b:.3f} µm (Move: {step_dist_2_to_2b:.3f}µm)\n\n"
+                     f"• Step 2 Position  : {X2:.3f} µm (Move: {actual_move12:.3f}µm)\n"
+                     f"• Step 2b Position : {X2b:.3f} µm (Move: {actual_move2b2:.3f}µm)\n\n"
                      f"ALGORITHM TARGETS:\n"
                      f"• Amplitude Destination : {final_target_delta:.3f} µm\n"
                      f"• Area Destination : {final_target_area:.3f} µm\n\n"
                      f"ERROR STATUS:\n"
-                     f"• {error_status} Signal Errors | {motor_status} Motor Errors\n"
+                     f"• {motor_status} Motor | {error_status} Signal | {vtt_status} VTT | {bit_status} Bit\n"
                      f"• Step1 RMSE: {rmse_step1:.5f} | SNR: {snr_step1:.1f}dB\n"
                      f"• Step2 RMSE: {rmse_step2:.5f} | SNR: {snr_step2:.1f}dB\n"
                      f"• Step2b RMSE: {rmse_step2b:.5f} | SNR: {snr_step2b:.1f}dB")
