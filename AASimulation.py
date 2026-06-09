@@ -446,7 +446,6 @@ if not crossed_axis: # Always toward center
     min_bound = MIN_STEP
     max_bound = MAX_STEP
     area_heading = direction_to_center
-    strategy = "NO CROSS - Head toward center, bounds unchanged"
 
 else: # Handle overshoot (Known by MEMs and readout wave)
     # Adjust bounds for random steps based on area ratio
