@@ -1,6 +1,8 @@
 ## Project Description
 Our goal is to develop an open-source ASIC for auto aligner. In our demonstraction we are targeting optical probe stations where it reads photodetector signals, extracts vibration-synchronous alignment error from dither motion, estimates the peak offset, and drives a high speed and accuracy real-time alignment correction.
 
+<img src="Chart\Optical Probe Station Real Setup.png" width="100%" alt="Optical Probe Station Setup">
+
 ## Problem Statement
 Photonic packaging and integration are becoming increasingly important as Co-Packaging Optics (CPO) grows, but scalable alignment and testing remain difficult. Current alignment approaches are often specialized and not yet built for high-volume throughput.
 
@@ -13,8 +15,12 @@ Our ASIC provides an open-source, edge-processed feedback control loop for optic
 
 This offers a low-cost, integrable alternative to proprietary alignment hardware.
 
-Chip Architect
+<img src="Chart\Optical Probe Station Validation Setup.png" width="100%" alt="Optical Probe Station Setup">
+
+## Chip Architect
 Photodetector input -> Analog front end -> Digital Signal Processing Block -> External Hardware Control
+
+<img src="Chart\Optical Probe Station Full Design.png" width="100%" alt="Proposed Chip Architect">
 
 - [Project Repository](https://github.com/llhtimlam/Probton)
 - [Proposal](https://docs.google.com/presentation/d/1my20nb1kIsFqFrcN5mZosZAiVzRqFzaXHJhg6WDKTtg/edit?slide=id.g3ea99befb0f_0_14#slide=id.g3ea99befb0f_0_14)
