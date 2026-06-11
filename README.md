@@ -1,3 +1,10 @@
+# **Probton**
+### [2026 Chipathon SSCS PICO](https://sscs.ieee.org/technical-committees/tc-ose/sscs-pico-design-contest/)
+
+### Track B (Circuit for Sensors)
+
+### [Team B18 Probton] ASIC Solution for Optical Probe Station for Photonic Integrated Circuits Packaging and Testing
+
 ## Project Description
 Our goal is to develop an open-source ASIC for auto aligner. In our demonstraction we are targeting optical probe stations where it reads photodetector signals, extracts vibration-synchronous alignment error from dither motion, estimates the peak offset, and drives a high speed and accuracy real-time alignment correction.
 
@@ -18,16 +25,18 @@ This offers a low-cost, integrable alternative to proprietary alignment hardware
 <img src="Chart\Optical Probe Station Validation Setup.png" width="100%" alt="Optical Probe Station Setup">
 
 ## Chip Architect
-Photodetector input -> Analog front end -> Digital Signal Processing Block -> External Hardware Control
+
+Size: 1100um x 1100um (estimate) - Block type A
+
+Required pins: 16
 
 <img src="Chart\Optical Probe Station Full Design.png" width="100%" alt="Proposed Chip Architect">
+
+## Links
 
 - [Project Repository](https://github.com/llhtimlam/Probton)
 - [Proposal](https://docs.google.com/presentation/d/1my20nb1kIsFqFrcN5mZosZAiVzRqFzaXHJhg6WDKTtg/edit?slide=id.g3ea99befb0f_0_14#slide=id.g3ea99befb0f_0_14)
 - [Progress Tracker](https://app.notion.com/p/abraaralam/Probton-Home-377a16d0b43280fa8b21c942e25e7d73)
-
-## Track
-B (Circuit for Sensors)
 
 ## Team Members
 
@@ -43,3 +52,7 @@ We have created a [GitHub Organization for our team here](https://github.com/llh
 | Ashmita Saha | @ashmita1509 | ash_1509 | ashmita03saha@gmail.com | Interfacing |
 | Victoria Evelyn Tjhin | @victoriatjhin | vik_lyn_ | tjhinevelyn28@gmail.com | Digital & Analog Design |
 | Annika | @ | anna_b75_06065 |  | Analog Design |
+
+### Simulation result
+
+<img src="Chart\Optical Probe Station Simulation.png" width="100%" alt="Simulation Result">
