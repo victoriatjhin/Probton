@@ -384,7 +384,7 @@ delta_min_y2  = final_delta_min
 delta_x2      = final_target_delta
 delta_step   = command_step_delta
 
-converge_delta = 1
+converge_delta = 3
 delta_history = []
 
 while abs(final_target_delta) > ALIGNMENT_THRESHOLD and converge_delta < 100:
@@ -506,7 +506,7 @@ area_h2    = command_step_area
 area_ln_A2b = log_8bit(calculate_area(final_area_x_trace, final_area_y_trace))
 area_X2b   = final_target_area
 
-converge_area = 1
+converge_area = 4
 area_history = []
 
 while abs(final_target_area) > ALIGNMENT_THRESHOLD and converge_area < 100:
