@@ -45,7 +45,7 @@ MOTOR_GEAR_RATIO = offset_bound / MAX_CODE # Assume unlimited resolution for coa
 ENABLE_MOTOR_ERRORS = True
 BACKLASH_UM = 0.195
 MIN_MOVE_UM = 0.195           # minimum movement in μm
-STEP_ERROR_PERCENT = 0.01   # ±7% step error
+STEP_ERROR_PERCENT = 0.07   # ±7% step error
 
 
 

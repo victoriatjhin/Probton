@@ -1,9 +1,5 @@
-# **Probton**
-### [2026 Chipathon SSCS PICO](https://sscs.ieee.org/technical-committees/tc-ose/sscs-pico-design-contest/)
-
-### Track B (Circuit for Sensors)
-
-### [Team B18 Probton] ASIC Solution for Optical Probe Station for Photonic Integrated Circuits Packaging and Testing
+# **Probton** - ASIC Solution for Optical Probe Station for Photonic Integrated Circuits Packaging and Testing
+### [2026 Chipathon SSCS PICO](https://sscs.ieee.org/technical-committees/tc-ose/sscs-pico-design-contest/) - Track B (Circuit for Sensors) - Team B18 Probton
 
 ## Project Description
 Our goal is to develop an open-source ASIC for auto aligner. In our demonstraction we are targeting optical probe stations where it reads photodetector signals, extracts vibration-synchronous alignment error from dither motion, estimates the peak offset, and drives a high speed and accuracy real-time alignment correction.
@@ -55,4 +51,8 @@ We have created a [GitHub Organization for our team here](https://github.com/llh
 
 ### Simulation result
 
+Convergence Step = 5.7 ± 1.1 @ 1% Transmission loss
+
 <img src="Chart\Optical Probe Station Simulation.png" width="100%" alt="Simulation Result">
+
+<img src="Chart\Optical Probe Station Monte Carlo Simulation.png" width="100%" alt="Monte Carlo Simulation">
